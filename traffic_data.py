@@ -1,44 +1,45 @@
+from flask import Flask, jsonify
 import requests
-import json
-from datetime import datetime
+
+app = Flask(__name__)
 
 TOMTOM_API_KEY = "JxdohUdoPZSwqUy9a4NGKmWJemOFicDG"
 
-# Solapur bounding box
-BBOX = "17.55,75.80,17.75,76.00"  # south,west,north,east
+# Solapur bounding box (south, west, north, east)
+BBOX = "17.55,75.80,17.75,76.00"
 
-URL = (
-    "https://api.tomtom.com/traffic/services/5/incidentDetails"
-    f"?key={TOMTOM_API_KEY}"
-    f"&bbox={BBOX}"
-    "&language=en-GB"
-    "&timeValidityFilter=present"
-)
+@app.route("/traffic-incidents")
+def traffic_incidents():
+    url = (
+        "https://api.tomtom.com/traffic/services/5/incidentDetails"
+        f"?key={TOMTOM_API_KEY}"
+        f"&bbox={BBOX}"
+        "&language=en-GB"
+        "&timeValidityFilter=present"
+    )
 
-print("Fetching traffic incidents...")
+    response = requests.get(url)
+    data = response.json()
 
-response = requests.get(URL, timeout=10)
-response.raise_for_status()
-data = response.json()
+    incidents_list = []
 
-incidents = []
+    if "incidents" in data:
+        for inc in data["incidents"]:
+            incidents_list.append({
+                "id": inc.get("id"),
+                "type": inc.get("iconCategory"),
+                "description": inc.get("description", {}).get("value"),
+                "severity": inc.get("magnitudeOfDelay"),
+                "geometry": inc.get("geometry", {}).get("coordinates")
+            })
 
-for inc in data.get("incidents", []):
-    incidents.append({
-        "id": inc.get("id"),
-        "description": inc.get("properties", {}).get("description"),
-        "coordinates": inc.get("geometry", {}).get("coordinates")
+    return jsonify({
+        "city": "Solapur",
+        "count": len(incidents_list),
+        "incidents": incidents_list
     })
 
-output = {
-    "city": "Solapur",
-    "generated_at": datetime.now().isoformat(),
-    "total_incidents": len(incidents),
-    "incidents": incidents
-}
+if __name__ == "__main__":
+    app.run(debug=True)
 
-with open("traffic_incidents.json", "w", encoding="utf-8") as f:
-    json.dump(output, f, indent=4)
-
-print(f"Saved {len(incidents)} incidents")
 

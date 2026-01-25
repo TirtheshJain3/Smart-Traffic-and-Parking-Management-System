@@ -77,13 +77,13 @@ html, body { height: 100%; margin: 0; }
 <body>
 
 <div id="map"></div>
-
 <div id="navBanner"></div>
 
 <div class="panel">
   <button onclick="togglePanel()">⬆️ Hide panel</button>
   <button onclick="startTracking()">📍 Start GPS</button>
   <button onclick="setDestination()">🎯 Set Destination</button>
+  <button onclick="toggleBackendTraffic()">🚧 Toggle Traffic</button>
   <hr>
 
   <div>🚗 <b>Speed:</b> <span id="speed">--</span> km/h</div>
@@ -112,6 +112,10 @@ let gpsStarted = false, parkingLoading = false, panelHidden = false;
 let gpsPoints = [], speedHistory = [], currentSpeed = 0;
 let parkingMarkers = [];
 
+// Backend traffic
+let trafficIncidentLayers = [];
+let trafficBackendEnabled = true;
+
 /* =========================
    ICONS
 ========================= */
@@ -135,6 +139,10 @@ document.addEventListener("DOMContentLoaded", () => {
   map = L.map("map").setView([17.6599, 75.9064], 13);
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
     { attribution: "© OpenStreetMap contributors" }).addTo(map);
+
+  // Load backend traffic once map is ready
+  loadTrafficIncidentsFromBackend();
+  setInterval(loadTrafficIncidentsFromBackend, 60000);
 });
 
 /* =========================
@@ -147,9 +155,8 @@ function smoothSpeed(v){
 }
 function updateBanner(){
   if(!destination) return;
-  const b=document.getElementById("navBanner");
-  b.style.display="block";
-  b.innerText=`ETA: ${eta.innerText} • Traffic: ${traffic.innerText}`;
+  navBanner.style.display="block";
+  navBanner.innerText=`ETA: ${eta.innerText} • Traffic: ${traffic.innerText}`;
 }
 
 /* =========================
@@ -232,12 +239,53 @@ function showRealParking(){
         m.bindPopup(`<b>🅿️ Parking #${i+1}</b><br>📍 ${(dist/1000).toFixed(2)} km<br>🗺️ OpenStreetMap`);
         parkingMarkers.push(m);
       });
-      if(parkingMarkers.length){
-        const g=L.featureGroup([...parkingMarkers,L.marker(destination)]);
-        map.fitBounds(g.getBounds().pad(0.3));
-      }
       parkingLoading=false; setStatus("Parking loaded");
     }).catch(()=>{ setStatus("Parking unavailable"); parkingLoading=false; });
+}
+
+/* =========================
+   BACKEND TRAFFIC INCIDENTS
+========================= */
+async function loadTrafficIncidentsFromBackend(){
+  if(!trafficBackendEnabled) return;
+
+  try{
+    trafficIncidentLayers.forEach(l=>map.removeLayer(l));
+    trafficIncidentLayers=[];
+
+    const res=await fetch("http://127.0.0.1:5000/traffic-incidents");
+    const data=await res.json();
+
+    if(!data.incidents) return;
+
+    data.incidents.forEach(inc=>{
+      if(!inc.geometry) return;
+      inc.geometry.forEach(seg=>{
+        const pts=seg.map(p=>[p.latitude,p.longitude]);
+        let col="orange";
+        if(inc.severity>=4) col="red";
+        else if(inc.severity<=1) col="green";
+
+        const line=L.polyline(pts,{color:col,weight:6,opacity:0.85})
+          .bindPopup(`<b>🚧 Traffic Incident</b><br>${inc.description||""}<br>Severity: ${inc.severity}`)
+          .addTo(map);
+
+        trafficIncidentLayers.push(line);
+      });
+    });
+  }catch(e){ console.error(e); }
+}
+
+function toggleBackendTraffic(){
+  trafficBackendEnabled=!trafficBackendEnabled;
+  if(!trafficBackendEnabled){
+    trafficIncidentLayers.forEach(l=>map.removeLayer(l));
+    trafficIncidentLayers=[];
+    setStatus("Traffic hidden");
+  } else {
+    loadTrafficIncidentsFromBackend();
+    setStatus("Traffic shown");
+  }
 }
 
 /* =========================
@@ -273,6 +321,9 @@ function updateETA(){
 
 </body>
 </html>
+
+
+
 
 
 
