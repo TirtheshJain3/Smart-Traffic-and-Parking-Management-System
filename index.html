@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Smart Traffic & Real Parking</title>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+
+<style>
+html, body { height: 100%; margin: 0; }
+#map { height: 100%; width: 100%; }
+
+.panel {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  background: rgba(255,255,255,0.92);
+  backdrop-filter: blur(6px);
+  padding: 12px;
+  z-index: 1000;
+  font-family: Arial, sans-serif;
+  box-shadow: 0 0 8px rgba(0,0,0,0.3);
+  width: 300px;
+  border-radius: 8px;
+}
+
+.panel button {
+  width: 100%;
+  margin-bottom: 6px;
+  padding: 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  border: 1px solid #ccc;
+  background: #fff;
+}
+
+.panel button:hover {
+  background: #f0f0f0;
+}
+
+.panel b { display: inline-block; width: 150px; }
+
+#status {
+  margin-top: 8px;
+  font-size: 13px;
+  color: #555;
+}
+
+.legend {
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+#navState {
+  font-size: 12px;
+  color: green;
+  display: none;
+}
+
+/* Top navigation banner */
+#navBanner {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #222;
+  color: white;
+  padding: 6px 12px;
+  border-radius: 6px;
+  z-index: 1000;
+  font-size: 14px;
+  display: none;
+}
+</style>
+</head>
+
+<body>
+
+<div id="map"></div>
+
+<div id="navBanner"></div>
+
+<div class="panel">
+  <button onclick="togglePanel()">⬆️ Hide panel</button>
+  <button onclick="startTracking()">📍 Start GPS</button>
+  <button onclick="setDestination()">🎯 Set Destination</button>
+  <hr>
+
+  <div>🚗 <b>Speed:</b> <span id="speed">--</span> km/h</div>
+  <div>🚦 <b>Traffic:</b> <span id="traffic">--</span></div>
+  <div>📏 <b>Distance:</b> <span id="distance">--</span> km</div>
+  <div>⏱️ <b>ETA:</b> <span id="eta">--</span></div>
+
+  <div id="navState">● Navigation active</div>
+
+  <div class="legend">
+    <b>Traffic legend:</b><br>
+    🟢 Free &nbsp; 🟠 Moderate &nbsp; 🔴 Heavy
+  </div>
+
+  <div id="status">Status: Idle</div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<script>
+/* =========================
+   GLOBAL STATE
+========================= */
+let map, userMarker = null, destination = null, routeLine = null;
+let gpsStarted = false, parkingLoading = false, panelHidden = false;
+let gpsPoints = [], speedHistory = [], currentSpeed = 0;
+let parkingMarkers = [];
+
+/* =========================
+   ICONS
+========================= */
+const userIcon = L.icon({
+  iconUrl: "https://maps.gstatic.com/mapfiles/ms2/micons/blue-dot.png",
+  iconSize: [32,32]
+});
+const destIcon = L.icon({
+  iconUrl: "https://maps.gstatic.com/mapfiles/ms2/micons/red-dot.png",
+  iconSize: [32,32]
+});
+const parkingIcon = L.icon({
+  iconUrl: "https://maps.gstatic.com/mapfiles/ms2/micons/parkinglot.png",
+  iconSize: [32,32]
+});
+
+/* =========================
+   INIT MAP
+========================= */
+document.addEventListener("DOMContentLoaded", () => {
+  map = L.map("map").setView([17.6599, 75.9064], 13);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+    { attribution: "© OpenStreetMap contributors" }).addTo(map);
+});
+
+/* =========================
+   UI HELPERS
+========================= */
+function setStatus(t){ document.getElementById("status").innerText="Status: "+t; }
+function smoothSpeed(v){
+  speedHistory.push(v); if(speedHistory.length>5) speedHistory.shift();
+  return speedHistory.reduce((a,b)=>a+b,0)/speedHistory.length;
+}
+function updateBanner(){
+  if(!destination) return;
+  const b=document.getElementById("navBanner");
+  b.style.display="block";
+  b.innerText=`ETA: ${eta.innerText} • Traffic: ${traffic.innerText}`;
+}
+
+/* =========================
+   PANEL TOGGLE
+========================= */
+function togglePanel(){
+  const panel=document.querySelector(".panel");
+  panelHidden=!panelHidden;
+  panel.style.height=panelHidden?"40px":"auto";
+  panel.querySelectorAll("div,hr,button:not(:first-child)")
+    .forEach(e=>e.style.display=panelHidden?"none":"block");
+}
+
+/* =========================
+   GPS
+========================= */
+function startTracking(){
+  if(!navigator.geolocation){ alert("GPS not supported"); return; }
+  gpsStarted=true; setStatus("GPS active");
+  navigator.geolocation.watchPosition(pos=>{
+    const p=[pos.coords.latitude,pos.coords.longitude];
+    gpsPoints.push({pos:p,time:Date.now()});
+    gpsPoints=gpsPoints.filter(x=>Date.now()-x.time<=30000);
+    updateMarker(p); updateETA();
+  },null,{enableHighAccuracy:true});
+  setInterval(processTraffic,30000);
+}
+
+function updateMarker(pos){
+  if(!userMarker){
+    userMarker=L.marker(pos,{icon:userIcon}).addTo(map).bindPopup("🚗 You").openPopup();
+  } else userMarker.setLatLng(pos);
+  map.panTo(pos,{animate:true,duration:0.5});
+}
+
+/* =========================
+   DESTINATION & ROUTE
+========================= */
+function setDestination(){
+  if(!gpsStarted){ alert("Start GPS first"); return; }
+  setStatus("Select destination");
+  map.getContainer().style.cursor="crosshair";
+  map.once("click",e=>{
+    map.getContainer().style.cursor="";
+    destination=e.latlng;
+    L.marker(destination,{icon:destIcon}).addTo(map).bindPopup("🎯 Destination").openPopup();
+    calculateRoute();
+  });
+}
+
+function calculateRoute(){
+  setStatus("Fetching route...");
+  const s=userMarker.getLatLng(), d=destination;
+  fetch(`https://router.project-osrm.org/route/v1/driving/${s.lng},${s.lat};${d.lng},${d.lat}?overview=full&geometries=geojson`)
+    .then(r=>r.json()).then(data=>{
+      const coords=data.routes[0].geometry.coordinates.map(c=>[c[1],c[0]]);
+      routeLine=L.polyline(coords,{color:"green",weight:6}).addTo(map);
+      navState.style.display="block";
+      setStatus("Route loaded");
+      showRealParking();
+    });
+}
+
+/* =========================
+   REAL PARKING (OSM)
+========================= */
+function showRealParking(){
+  if(parkingLoading) return;
+  parkingLoading=true; setStatus("Loading parking...");
+  parkingMarkers.forEach(m=>map.removeLayer(m)); parkingMarkers=[];
+  const lat=destination.lat,lng=destination.lng;
+  const q=`[out:json];(node["amenity"="parking"](around:2000,${lat},${lng});
+           way["amenity"="parking"](around:2000,${lat},${lng}););out center;`;
+  fetch("https://overpass-api.de/api/interpreter",{method:"POST",body:q})
+    .then(r=>r.json()).then(data=>{
+      data.elements.slice(0,15).forEach((p,i)=>{
+        const c=p.lat?[p.lat,p.lon]:[p.center.lat,p.center.lon];
+        const dist=map.distance(destination,c);
+        const m=L.marker(c,{icon:parkingIcon}).addTo(map);
+        m.bindPopup(`<b>🅿️ Parking #${i+1}</b><br>📍 ${(dist/1000).toFixed(2)} km<br>🗺️ OpenStreetMap`);
+        parkingMarkers.push(m);
+      });
+      if(parkingMarkers.length){
+        const g=L.featureGroup([...parkingMarkers,L.marker(destination)]);
+        map.fitBounds(g.getBounds().pad(0.3));
+      }
+      parkingLoading=false; setStatus("Parking loaded");
+    }).catch(()=>{ setStatus("Parking unavailable"); parkingLoading=false; });
+}
+
+/* =========================
+   TRAFFIC & ETA
+========================= */
+function processTraffic(){
+  if(gpsPoints.length<2) return;
+  let dist=0;
+  for(let i=1;i<gpsPoints.length;i++)
+    dist+=map.distance(gpsPoints[i-1].pos,gpsPoints[i].pos);
+  const t=(gpsPoints.at(-1).time-gpsPoints[0].time)/1000;
+  currentSpeed=smoothSpeed((dist/t)*3.6);
+  updateUI();
+}
+
+function updateUI(){
+  speed.innerText=currentSpeed.toFixed(1);
+  let t="Free",c="green";
+  if(currentSpeed<15){t="Heavy";c="red";}
+  else if(currentSpeed<30){t="Moderate";c="orange";}
+  traffic.innerText=t;
+  if(routeLine) routeLine.setStyle({color:c});
+  updateBanner();
+}
+
+function updateETA(){
+  if(!destination||!userMarker) return;
+  const d=map.distance(userMarker.getLatLng(),destination)/1000;
+  distance.innerText=d.toFixed(2);
+  eta.innerText=currentSpeed>=5?((d/currentSpeed)*60).toFixed(1)+" min":"--";
+}
+</script>
+
+</body>
+</html>
+
+
+
+
+
