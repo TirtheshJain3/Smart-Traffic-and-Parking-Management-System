@@ -3,7 +3,7 @@ import requests
 
 app = Flask(__name__)
 
-TOMTOM_API_KEY = "JxdohUdoPZSwqUy9a4NGKmWJemOFicDG"
+TOMTOM_API_KEY = "API_KEY"
 
 # Solapur bounding box (south, west, north, east)
 BBOX = "17.55,75.80,17.75,76.00"
